@@ -1,0 +1,2 @@
+sample	r1_files	r2_files	library_type
+synthetic_L1	lane1_R1.fq.gz,lane2_R1.fq.gz	lane1_R2.fq.gz,lane2_R2.fq.gz	auto

@@ -1,48 +1,64 @@
 # fqdup-qc-nextflow
 
-A Nextflow workflow that runs fqdup QC on paired-end ancient-DNA libraries. Each sample goes through four stages:
+A Nextflow workflow for ancient-DNA read QC with [fqdup](https://github.com/genomewalker/fqdup). It takes raw paired-end lanes per sample and produces merged-read QC, a reference-free damage profile before and after deduplication, and deduplicated reads ready for mapping or classification.
 
-1. `MERGE_RAW`: optional fastp adapter and quality trimming per lane, then `fqdup merge` of all lanes into one merged FASTQ. Writes a merge report, a damage estimate and the substitution table.
-2. `PROFILE_PRE`: `fqdup profile` damage profile of the merged reads.
-3. `SORT_DEREP`: `fqdup sort` then `fqdup derep`. Writes the deduplicated FASTQ and a cluster table.
-4. `PROFILE_POST`: `fqdup profile` damage profile of the deduplicated reads.
+```
+raw R1/R2 lanes
+  │
+  ├─ MERGE_RAW      optional fastp trimming, then fqdup merge (all lanes → one merged FASTQ)
+  ├─ PROFILE_PRE    fqdup profile on the merged reads
+  ├─ SORT_DEREP     fqdup sort + fqdup derep (PCR duplicate removal)
+  └─ PROFILE_POST   fqdup profile on the deduplicated reads
+```
 
-Every stage checks its outputs (gzip integrity, FASTQ framing, valid JSON) before it finishes. Merge and dedup write a provenance file that records the binary SHA-256, the host and a timestamp.
+- **[Tutorial](docs/tutorial.md)**: run the bundled test, read the results, then run your own samples.
+- **[Outputs](docs/outputs.md)**: every output file and field, and how to read the damage profile.
+
+## Quick start
+
+```bash
+nextflow run genomewalker/fqdup-qc-nextflow -profile test --outdir test-results
+```
+
+The test runs one synthetic sample (5,000 read pairs, two lanes) through all four stages in a few minutes. It uses fqdup's own merge filters, so fastp is not needed.
 
 ## Requirements
 
 - Nextflow 25.10 or later.
-- [fqdup](https://github.com/genomewalker/fqdup) on `PATH`, or pass `--fqdup /path/to/fqdup`.
-- [fastp](https://github.com/OpenGene/fastp), only when `--trim_mode fastp` (the default).
+- [fqdup](https://github.com/genomewalker/fqdup) on `PATH`, or `--fqdup /path/to/fqdup`.
+- [fastp](https://github.com/OpenGene/fastp), only with `--trim_mode fastp` (the default).
 - `python3`, `gzip` and `sha256sum`.
 
-## Test
+## Input
 
-```bash
-nextflow run genomewalker/fqdup-qc-nextflow -profile test --fqdup /path/to/fqdup
-```
+A tab-separated manifest with a header row and one row per sample:
 
-The test runs one synthetic sample: 5,000 read pairs in two lanes, from fqdup's simulated development set. It uses `--trim_mode fqdup`, so fastp is not needed.
+| Column | Required | Meaning |
+|---|---|---|
+| `sample` | yes | sample ID, used in output names: letters, digits, `_`, `.`, `-` |
+| `r1_files` | yes | comma-separated R1 FASTQs, one per lane |
+| `r2_files` | yes | comma-separated R2 FASTQs, in the same lane order |
+| `library_type` | no | `ds`, `ss`, `auto` or `unknown`; defaults to `--library_type` |
+| anything else | no | copied verbatim into the merge provenance file |
 
-## Usage
+Relative paths resolve against the manifest's directory. [test/samples.tsv](test/samples.tsv) is a working example.
 
 ```bash
 nextflow run genomewalker/fqdup-qc-nextflow --manifest samples.tsv --outdir results
 ```
 
-The manifest is a tab-separated file with a header row:
+## Outputs
 
-| Column | Required | Meaning |
+| Directory | Files per sample | What it tells you |
 |---|---|---|
-| `sample` | yes | sample ID: letters, digits, `_`, `.`, `-` |
-| `r1_files` | yes | comma-separated R1 FASTQs, one per lane |
-| `r2_files` | yes | comma-separated R2 FASTQs, in the same lane order |
-| `library_type` | no | `ds`, `ss`, `auto` or `unknown`; defaults to `--library_type` |
-| `batch`, `is_control` | no | copied into the merge provenance file |
+| `merge_qc/` | `merge.json`, `damage.json`, `subst.tsv`, `merge.provenance.txt`, `fastp-reports.tar.gz` | merge yield, library type, overlap-based damage, provenance |
+| `profiles/pre_derep/` | `profile-pre.html`, `.json`, `.tsv`, `pre.tdmg` | damage profile of all merged reads |
+| `dedup/` | `dedup.fq.gz`, `clusters.tsv.gz`, `derep.provenance.txt` | deduplicated reads and duplicate clusters |
+| `profiles/post_derep/` | `profile-post.html`, `.json`, `.tsv`, `post.tdmg` | damage profile after dedup; report this one |
 
-Relative FASTQ paths resolve against the manifest's directory. Extra columns are ignored. See [test/samples.tsv](test/samples.tsv) for an example.
+Start with the HTML report. For the call, read `characterization.verdict.deamination` in the profile JSON. [docs/outputs.md](docs/outputs.md) explains each file.
 
-With `ds` or `ss`, merge runs with that library type in strict mode. With `auto` or `unknown`, fqdup detects the type during merge.
+Only merged reads are kept. Unmerged pairs and orphan reads are counted in `merge.json` but not written. Dedup runs per sample, over all of its lanes.
 
 ## Parameters
 
@@ -55,29 +71,17 @@ With `ds` or `ss`, merge runs with that library type in strict mode. With `auto`
 | `--fqdup_revision` | `unrecorded` | label written to the provenance files |
 | `--fastp` | `fastp` | fastp binary |
 | `--fastp_sha256` | | when set, refuses any other fastp binary |
-| `--trim_mode` | `fastp` | `fastp` trims before merge; `fqdup` uses only fqdup's merge filters |
-| `--merge_min_length` | `16` | `fqdup merge --min-length` |
-| `--merge_min_entropy` | `0.0` | `fqdup merge --min-entropy` |
+| `--trim_mode` | `fastp` | `fastp` trims each lane before merge; `fqdup` uses only fqdup's merge filters |
+| `--merge_min_length` | `16` | minimum merged read length |
+| `--merge_min_entropy` | `0.0` | low-complexity filter: Shannon entropy floor in bits (0 = off) |
 | `--library_type` | `auto` | default when the manifest has no `library_type` column |
 
-## Outputs
+## Profiles and site configuration
 
-```
-results/
-  merge_qc/              <sample>.merge.json, .damage.json, .subst.tsv, .merge.provenance.txt, .fastp-reports.tar.gz
-  profiles/pre_derep/    <sample>.profile-pre.json, .pre.tdmg
-  dedup/                 <sample>.dedup.fq.gz, .clusters.tsv.gz, .derep.provenance.txt
-  profiles/post_derep/   <sample>.profile-post.json, .post.tdmg
-```
-
-The merged FASTQ is an intermediate and is not published.
-
-## Profiles
-
-- `test`: the bundled synthetic sample on the local executor with small resources.
+- `test`: the bundled synthetic sample, run locally with small resources.
 - `slurm`: submits each task to Slurm.
 
-Put site settings in your own config file and load it with `-c site.config`: queue names, other executors such as HyperQueue, and binary paths and pins. Profiles with the same name merge with the ones here.
+Put cluster settings in your own config and pass it with `-c site.config -profile <name>`. That covers queues, other executors such as HyperQueue, resource changes and binary pins; the [tutorial](docs/tutorial.md#5-resources-and-where-to-run) has an example. Profiles with the same name merge with the ones here.
 
 ## License
 

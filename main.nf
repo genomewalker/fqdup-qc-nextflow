@@ -13,10 +13,12 @@ params.merge_min_entropy = 0.0
 params.library_type = 'auto'
 
 // library_type is a per-sample property: a cohort may mix single- and double-stranded preps.
-// Only the documented values are passed through; for 'auto'/'unknown' fqdup detects the type on
-// merge and propagates its call to profile and derep via --subst-binary.
+// A declared ds/ss is passed to every stage (strict at merge). For 'auto'/'unknown' each stage
+// detects the type on its own input; merge's detected call is not carried to profile or derep.
 def libStrict(meta) { meta.library_type in ['ds', 'ss'] ? "--library-type ${meta.library_type} --strict-library-type" : '' }
 def libPlain(meta)  { meta.library_type in ['ds', 'ss'] ? "--library-type ${meta.library_type}" : '' }
+// Every manifest column, verbatim, as manifest.<column>=<value> lines for the provenance files.
+def manifestLines(meta) { meta.columns.collect { k, v -> "manifest.${k}=${v ?: ''}" }.join('\n') }
 // Records the binary's SHA-256 in \$var and, when a pin is given, fails on any other binary.
 def pinCheck(String var, String tool, String bin, pin) {
     "${var}=\$(sha256sum \"\$(command -v '${bin}')\" | cut -d' ' -f1)\n" +
@@ -58,7 +60,7 @@ process MERGE_RAW {
           -o "trim_reads/r1-\$i.fq.gz" -O "trim_reads/r2-\$i.fq.gz" \
           --detect_adapter_for_pe --length_required 20 \
           --cut_tail --cut_tail_mean_quality 15 \
-          -g --poly_g_min_len 10 -w 8 \
+          -g --poly_g_min_len 10 -w ${task.cpus} \
           -j "trim_reports/lane-\$i.json" -h "trim_reports/lane-\$i.html"
         gzip -t "trim_reads/r1-\$i.fq.gz" "trim_reads/r2-\$i.fq.gz"
         R1_USE[\$i]="trim_reads/r1-\$i.fq.gz"
@@ -78,17 +80,20 @@ process MERGE_RAW {
       ${libStrict(meta)} \
       --min-overlap 11 --max-mm-rate 0.08 \
       --min-length "$params.merge_min_length" \
-      --min-entropy "$params.merge_min_entropy" -p 8
+      --min-entropy "$params.merge_min_entropy" -p ${task.cpus}
     gzip -t "${meta.sample}.merged.fq.gz"
     first=\$(gzip -cd "${meta.sample}.merged.fq.gz" | head -c 1 || true)
     [ "\$first" = '@' ] || { echo 'Merged FASTQ framing invalid' >&2; exit 1; }
     python3 -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' "${meta.sample}.merge.json"
     test -s "${meta.sample}.damage.json"
     test -s "${meta.sample}.subst.tsv"
-    printf 'sample=%s\\nbatch=%s\\nis_control=%s\\nraw_lane_pairs=%s\\ntrim_mode=%s\\nfqdup_revision=%s\\nfqdup_sha256=%s\\nfastp_sha256=%s\\nstamped=%s\\nhost=%s\\n' \
-      "$meta.sample" "$meta.batch" "$meta.is_control" "$meta.lanes" \
+    printf 'sample=%s\\nlibrary_type=%s\\nraw_lane_pairs=%s\\ntrim_mode=%s\\nfqdup_revision=%s\\nfqdup_sha256=%s\\nfastp_sha256=%s\\nstamped=%s\\nhost=%s\\n' \
+      "$meta.sample" "$meta.library_type" "$meta.lanes" \
       "$params.trim_mode" "$params.fqdup_revision" "\$got" "\${fastp_sha:-none}" "\$(date -Is)" "\$(hostname)" \
       > "${meta.sample}.merge.provenance.txt"
+    cat >> "${meta.sample}.merge.provenance.txt" <<'MANIFEST_END'
+${manifestLines(meta)}
+MANIFEST_END
     rm -rf trim_reads
     """
 
@@ -109,14 +114,15 @@ process PROFILE_PRE {
     memory '16 GB'
     time '12h'
     publishDir "$params.outdir/profiles/pre_derep", mode: 'copy', overwrite: false,
-        saveAs: { name -> (name.endsWith('.profile-pre.json') || name.endsWith('.pre.tdmg')) ? name : null }
+        saveAs: { name -> name ==~ /.*\.(profile-pre\.(json|html|tsv)|pre\.tdmg)/ ? name : null }
 
     input:
     tuple val(meta), path(merged), path(merge_json), path(damage_json),
           path(subst_tsv), path(merge_provenance), path(fastp_reports)
 
     output:
-    tuple val(meta), path(merged), path('*.profile-pre.json'), path('*.pre.tdmg')
+    tuple val(meta), path(merged), path('*.profile-pre.json'), path('*.pre.tdmg'),
+          path('*.profile-pre.html'), path('*.profile-pre.tsv')
 
     script:
     """
@@ -125,15 +131,18 @@ process PROFILE_PRE {
     "$params.fqdup" profile -i "$merged" \
       --json "${meta.sample}.profile-pre.json" \
       --damage-summary "${meta.sample}.pre.tdmg" \
-      ${libPlain(meta)} --length-bins auto -p 8
+      --html "${meta.sample}.profile-pre.html" --tsv "${meta.sample}.profile-pre.tsv" \
+      ${libPlain(meta)} --length-bins auto -p ${task.cpus}
     python3 -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' "${meta.sample}.profile-pre.json"
-    test -s "${meta.sample}.pre.tdmg"
+    test -s "${meta.sample}.pre.tdmg" && test -s "${meta.sample}.profile-pre.html" && test -s "${meta.sample}.profile-pre.tsv"
     """
 
     stub:
     """
     printf '{"stub":true}\\n' > "${meta.sample}.profile-pre.json"
     printf 'stub\\n' > "${meta.sample}.pre.tdmg"
+    printf 'stub\\n' > "${meta.sample}.profile-pre.html"
+    printf 'stub\\n' > "${meta.sample}.profile-pre.tsv"
     """
 }
 
@@ -145,7 +154,7 @@ process SORT_DEREP {
     publishDir "$params.outdir/dedup", mode: 'copy', overwrite: false
 
     input:
-    tuple val(meta), path(merged), path(pre_json), path(pre_tdmg)
+    tuple val(meta), path(merged), path(pre_json), path(pre_tdmg), path(pre_html), path(pre_tsv)
 
     output:
     tuple val(meta), path('*.dedup.fq.gz'), path('*.clusters.tsv.gz'),
@@ -158,7 +167,7 @@ process SORT_DEREP {
     ${pinCheck('got', 'fqdup', params.fqdup, params.fqdup_sha256)}
     mkdir -p tmp
     "$params.fqdup" sort -i "$merged" -o sorted.fq.gz \
-      --max-memory 64G -p 32 -t tmp
+      --max-memory ${maxMemGb}G -p ${task.cpus} -t tmp
     gzip -t sorted.fq.gz
     first=\$(gzip -cd sorted.fq.gz | head -c 1 || true)
     [ "\$first" = '@' ] || { echo 'Sorted FASTQ framing invalid' >&2; exit 1; }
@@ -166,7 +175,7 @@ process SORT_DEREP {
       -o "${meta.sample}.dedup.fq.gz" \
       -c "${meta.sample}.clusters.tsv.gz" \
       --damage report --library-type "$meta.library_type" \
-      --max-mem "$maxMemGb" -p 32
+      --max-mem "$maxMemGb" -p ${task.cpus}
     gzip -t "${meta.sample}.dedup.fq.gz" "${meta.sample}.clusters.tsv.gz"
     first=\$(gzip -cd "${meta.sample}.dedup.fq.gz" | head -c 1 || true)
     [ "\$first" = '@' ] || { echo 'Dedup FASTQ framing invalid' >&2; exit 1; }
@@ -191,13 +200,14 @@ process PROFILE_POST {
     memory '16 GB'
     time '12h'
     publishDir "$params.outdir/profiles/post_derep", mode: 'copy', overwrite: false,
-        saveAs: { name -> (name.endsWith('.profile-post.json') || name.endsWith('.post.tdmg')) ? name : null }
+        saveAs: { name -> name ==~ /.*\.(profile-post\.(json|html|tsv)|post\.tdmg)/ ? name : null }
 
     input:
     tuple val(meta), path(dedup), path(clusters), path(derep_provenance)
 
     output:
-    tuple val(meta), path('*.profile-post.json'), path('*.post.tdmg')
+    tuple val(meta), path('*.profile-post.json'), path('*.post.tdmg'),
+          path('*.profile-post.html'), path('*.profile-post.tsv')
 
     script:
     """
@@ -206,20 +216,23 @@ process PROFILE_POST {
     "$params.fqdup" profile -i "$dedup" \
       --json "${meta.sample}.profile-post.json" \
       --damage-summary "${meta.sample}.post.tdmg" \
-      ${libPlain(meta)} --length-bins auto -p 8
+      --html "${meta.sample}.profile-post.html" --tsv "${meta.sample}.profile-post.tsv" \
+      ${libPlain(meta)} --length-bins auto -p ${task.cpus}
     python3 -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' "${meta.sample}.profile-post.json"
-    test -s "${meta.sample}.post.tdmg"
+    test -s "${meta.sample}.post.tdmg" && test -s "${meta.sample}.profile-post.html" && test -s "${meta.sample}.profile-post.tsv"
     """
 
     stub:
     """
     printf '{"stub":true}\\n' > "${meta.sample}.profile-post.json"
     printf 'stub\\n' > "${meta.sample}.post.tdmg"
+    printf 'stub\\n' > "${meta.sample}.profile-post.html"
+    printf 'stub\\n' > "${meta.sample}.profile-post.tsv"
     """
 }
 
 workflow {
-    if (!params.manifest) error 'Provide --manifest: TSV with sample, r1_files, r2_files [, library_type, batch, is_control]'
+    if (!params.manifest) error 'Provide --manifest: TSV with sample, r1_files, r2_files [, library_type, any other columns]'
     if (!(params.trim_mode in ['fqdup', 'fastp'])) error 'trim_mode must be fqdup or fastp'
     if (!(params.library_type in ['auto', 'ds', 'ss', 'unknown'])) error 'Invalid library_type'
     // Relative FASTQ paths resolve against the manifest's directory.
@@ -235,8 +248,7 @@ workflow {
             if (!r1 || r1.size() != r2.size()) error "Unpaired raw lanes: $id"
             def lt = (row.library_type ?: params.library_type).toString().trim()
             if (!(lt in ['auto', 'ds', 'ss', 'unknown'])) error "Invalid library_type for $id: $lt"
-            def meta = [sample: id, batch: row.batch ?: '', is_control: row.is_control ?: '',
-                        library_type: lt, lanes: r1.size()]
+            def meta = [sample: id, library_type: lt, lanes: r1.size(), columns: new LinkedHashMap(row)]
             [meta, r1, r2]
         }
     MERGE_RAW(reads)

@@ -32,7 +32,7 @@ The test runs one synthetic sample (5,000 read pairs, two lanes) through all fou
 ## Requirements
 
 - Nextflow 25.10 or later.
-- [fqdup](https://github.com/genomewalker/fqdup) on `PATH`, or `--fqdup /path/to/fqdup`.
+- [fqdup](https://github.com/genomewalker/fqdup) 2.1.1 or later, on `PATH` or given with `--fqdup /path/to/fqdup`.
 - [fastp](https://github.com/OpenGene/fastp), only with `--trim_mode fastp` (the default).
 - `python3`, `gzip` and `sha256sum`.
 
@@ -58,14 +58,14 @@ nextflow run genomewalker/fqdup-qc-nextflow --manifest samples.tsv --outdir resu
 
 | Directory | Files per sample | What it tells you |
 |---|---|---|
-| `merge_qc/` | `merge.json`, `damage.json`, `subst.tsv`, `merge.provenance.txt`, `fastp-reports.tar.gz` | merge yield, library type, overlap-based damage, provenance |
+| `merge_qc/` | `merge-outcomes.tsv`, `merge.log`, `merge.provenance.txt`, `fastp-reports.tar.gz` | merge yield, merge cutoff, provenance |
 | `profiles/pre_derep/` | `profile-pre.html`, `.json`, `.tsv`, `pre.tdmg` | damage profile of all merged reads |
 | `dedup/` | `dedup.fq.gz`, `clusters.tsv.gz`, `derep.provenance.txt` | deduplicated reads and duplicate clusters |
 | `profiles/post_derep/` | `profile-post.html`, `.json`, `.tsv`, `post.tdmg` | damage profile after dedup; report this one |
 
 Start with the HTML report. For the call, read `characterization.verdict.deamination` in the profile JSON. [docs/outputs.md](docs/outputs.md) explains each file.
 
-Only merged reads are kept. Unmerged pairs and orphan reads are counted in `merge.json` but not written. Dedup runs per sample, over all of its lanes.
+Only merged reads are kept. Unmerged pairs and orphan reads are counted in `merge-outcomes.tsv` but not written. Dedup runs per sample, over all of its lanes.
 
 ## Parameters
 
@@ -80,7 +80,6 @@ Only merged reads are kept. Unmerged pairs and orphan reads are counted in `merg
 | `--fastp_sha256` | | when set, refuses any other fastp binary |
 | `--trim_mode` | `fastp` | `fastp` trims each lane before merge; `fqdup` uses only fqdup's merge filters |
 | `--merge_min_length` | `16` | minimum merged read length |
-| `--merge_min_entropy` | `0.0` | low-complexity filter: Shannon entropy floor in bits (0 = off) |
 | `--library_type` | `auto` | default when the manifest has no `library_type` column |
 
 ## Profiles and site configuration

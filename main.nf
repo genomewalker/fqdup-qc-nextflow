@@ -9,13 +9,11 @@ params.fastp = 'fastp'
 params.fastp_sha256 = null
 params.trim_mode = 'fastp'
 params.merge_min_length = 16
-params.merge_min_entropy = 0.0
 params.library_type = 'auto'
 
 // library_type is a per-sample property: a cohort may mix single- and double-stranded preps.
-// A declared ds/ss is passed to every stage (strict at merge). For 'auto'/'unknown' each stage
-// detects the type on its own input; merge's detected call is not carried to profile or derep.
-def libStrict(meta) { meta.library_type in ['ds', 'ss'] ? "--library-type ${meta.library_type} --strict-library-type" : '' }
+// A declared ds/ss is passed to every stage. For 'auto'/'unknown', profile and derep detect the
+// type on their own input.
 def libPlain(meta)  { meta.library_type in ['ds', 'ss'] ? "--library-type ${meta.library_type}" : '' }
 // Every manifest column, verbatim, as manifest.<column>=<value> lines for the provenance files.
 def manifestLines(meta) { meta.columns.collect { k, v -> "manifest.${k}=${v ?: ''}" }.join('\n') }
@@ -37,8 +35,7 @@ process MERGE_RAW {
     tuple val(meta), path(r1_lanes), path(r2_lanes)
 
     output:
-    tuple val(meta), path('*.merged.fq.gz'), path('*.merge.json'),
-          path('*.damage.json'), path('*.subst.tsv'),
+    tuple val(meta), path('*.merged.fq.gz'), path('*.merge-outcomes.tsv'), path('*.merge.log'),
           path('*.merge.provenance.txt'), path('*.fastp-reports.tar.gz')
 
     script:
@@ -72,21 +69,16 @@ process MERGE_RAW {
     tar -czf "${meta.sample}.fastp-reports.tar.gz" trim_reports
     r1_csv=\$(IFS=,; printf '%s' "\${R1_USE[*]}")
     r2_csv=\$(IFS=,; printf '%s' "\${R2_USE[*]}")
-    "$params.fqdup" merge -1 "\$r1_csv" -2 "\$r2_csv" \
-      -o "${meta.sample}.merged.fq.gz" \
-      --json "${meta.sample}.merge.json" \
-      --damage-out "${meta.sample}.damage.json" \
-      --subst-out "${meta.sample}.subst.tsv" \
-      ${libStrict(meta)} \
-      --min-overlap 11 --max-mm-rate 0.08 \
-      --min-length "$params.merge_min_length" \
-      --min-entropy "$params.merge_min_entropy" -p ${task.cpus}
-    gzip -t "${meta.sample}.merged.fq.gz"
+    "$params.fqdup" merge -1 "\$r1_csv" -2 "\$r2_csv" -o merge_out \
+      ${libPlain(meta)} --min-length "$params.merge_min_length" \
+      --outcomes summary -p ${task.cpus} 2> "${meta.sample}.merge.log" \
+      || { cat "${meta.sample}.merge.log" >&2; exit 1; }
+    awk -F'\t' 'NR > 1 && \$1 != "total" { s += \$2 } \$1 == "total" { t = \$2 } END { exit !(t > 0 && s == t) }' \
+      merge_out/outcomes.summary.tsv || { echo 'Merge outcomes do not add up' >&2; exit 1; }
+    cp merge_out/outcomes.summary.tsv "${meta.sample}.merge-outcomes.tsv"
+    gzip -c merge_out/merged.fq > "${meta.sample}.merged.fq.gz"
     first=\$(gzip -cd "${meta.sample}.merged.fq.gz" | head -c 1 || true)
     [ "\$first" = '@' ] || { echo 'Merged FASTQ framing invalid' >&2; exit 1; }
-    python3 -c 'import json, sys; json.load(open(sys.argv[1], encoding="utf-8"))' "${meta.sample}.merge.json"
-    test -s "${meta.sample}.damage.json"
-    test -s "${meta.sample}.subst.tsv"
     printf 'sample=%s\\nlibrary_type=%s\\nraw_lane_pairs=%s\\ntrim_mode=%s\\nfqdup_revision=%s\\nfqdup_sha256=%s\\nfastp_sha256=%s\\nstamped=%s\\nhost=%s\\n' \
       "$meta.sample" "$meta.library_type" "$meta.lanes" \
       "$params.trim_mode" "$params.fqdup_revision" "\$got" "\${fastp_sha:-none}" "\$(date -Is)" "\$(hostname)" \
@@ -94,15 +86,14 @@ process MERGE_RAW {
     cat >> "${meta.sample}.merge.provenance.txt" <<'MANIFEST_END'
 ${manifestLines(meta)}
 MANIFEST_END
-    rm -rf trim_reads
+    rm -rf trim_reads merge_out
     """
 
     stub:
     """
     printf '@stub\\nA\\n+\\n!\\n' | gzip -c > "${meta.sample}.merged.fq.gz"
-    printf '{"stub":true}\\n' > "${meta.sample}.merge.json"
-    printf '{"stub":true}\\n' > "${meta.sample}.damage.json"
-    printf 'stub\\n' > "${meta.sample}.subst.tsv"
+    printf 'outcome\\tcount\\n' > "${meta.sample}.merge-outcomes.tsv"
+    printf 'stub\\n' > "${meta.sample}.merge.log"
     printf 'stub\\n' > "${meta.sample}.merge.provenance.txt"
     printf 'stub\\n' > "${meta.sample}.fastp-reports.tar.gz"
     """
@@ -117,8 +108,8 @@ process PROFILE_PRE {
         saveAs: { name -> name ==~ /.*\.(profile-pre\.(json|html|tsv)|pre\.tdmg)/ ? name : null }
 
     input:
-    tuple val(meta), path(merged), path(merge_json), path(damage_json),
-          path(subst_tsv), path(merge_provenance), path(fastp_reports)
+    tuple val(meta), path(merged), path(merge_outcomes), path(merge_log),
+          path(merge_provenance), path(fastp_reports)
 
     output:
     tuple val(meta), path(merged), path('*.profile-pre.json'), path('*.pre.tdmg'),

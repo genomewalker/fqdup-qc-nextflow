@@ -4,7 +4,7 @@ One run on the bundled test sample, then your own data. About five minutes on a 
 
 ## 1. Install the tools
 
-You need Nextflow 25.10 or later, fqdup, `python3`, `gzip` and `sha256sum`. fastp is only needed if you trim with it (the default for real data).
+You need Nextflow 25.10 or later, fqdup 2.1.1 or later, `python3`, `gzip` and `sha256sum`. fastp is only needed if you trim with it (the default for real data).
 
 ```bash
 nextflow -version
@@ -36,10 +36,16 @@ Open them in this order:
 1. **Merge yield.** Only merged reads go on to the later stages.
 
    ```bash
-   python3 -c 'import json; print(json.load(open("test-results/merge_qc/synthetic_L1.merge.json"))["counts"])'
+   cat test-results/merge_qc/synthetic_L1.merge-outcomes.tsv
    ```
    ```
-   {'pairs_in': 5000, 'merged': 1567, 'unmerged': 516, 'orphan_r1': 18, 'orphan_r2': 17, 'dropped': 2882, 'balanced': True}
+   outcome	count
+   merged	4409
+   unmerged	591
+   orphan_r1	0
+   orphan_r2	0
+   dropped	0
+   total	5000
    ```
 
 2. **Damage curve.** Open `test-results/profiles/post_derep/synthetic_L1.profile-post.html` in a browser. Both curves rise towards the read ends; that rise is the deamination signal:
@@ -55,13 +61,17 @@ Open them in this order:
    v = p["characterization"]["verdict"]["deamination"]
    e = p["characterization"]["damage_context"]["evidence"]
    print(p["library_call"]["library_type"], v["call"], v["authenticated_by"], v["confidence"])
-   print("d_max 5prime", e["d_max_5"], "3prime", e["d_max_3"], "lambda 5prime", e["lambda_5"])'
+   print("d_max 5prime", e["d_max_5"], "3prime", e["d_max_3"], "lambda 5prime", e["lambda_5"])
+   print("artefacts", p["qc"]["library_artifact_reasons"])'
    ```
 
    ```
    double-stranded present channel_b high
-   d_max 5prime 0.204246 3prime 0.163931 lambda 5prime 0.154537
+   d_max 5prime 0.200049 3prime 0.140327 lambda 5prime 0.223379
+   artefacts ['adapter_remnant_3prime', 'position0_artifact_3prime']
    ```
+
+   The damage call is confident, but the 3′ end also carries artefact flags. On real data, treat the 3′ values with care when these appear ([step 4](outputs.md#reading-the-profile-json)).
 
 4. **Duplication.** Clusters against merged reads:
 
@@ -71,7 +81,7 @@ Open them in this order:
    ```
 
    ```
-   1567 reads, 1179 clusters, 24.8% duplicates
+   4409 reads, 3312 clusters, 24.9% duplicates
    ```
 
 [Outputs](outputs.md) explains every file and field, and how to read the profile.

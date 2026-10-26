@@ -5,9 +5,8 @@ Files are named `<sample>.<kind>`. The example values come from the bundled test
 ```
 results/
 ├── merge_qc/
-│   ├── <sample>.merge.json             merge counts, library type, adapters
-│   ├── <sample>.damage.json            damage measured on R1/R2 overlaps
-│   ├── <sample>.subst.tsv              R1 vs R2 substitution counts by position
+│   ├── <sample>.merge-outcomes.tsv     read pairs per merge outcome
+│   ├── <sample>.merge.log              merge cutoff and run diagnostics
 │   ├── <sample>.merge.provenance.txt   binaries, host, time, manifest row
 │   └── <sample>.fastp-reports.tar.gz   fastp reports per lane
 ├── profiles/pre_derep/
@@ -26,59 +25,41 @@ results/
 
 ```mermaid
 flowchart LR
-    A["5,000 read pairs"] --> B["1,567 merged"]
-    A --> C["516 unmerged"]
-    A --> D["35 orphans"]
-    A --> E["2,882 dropped"]
-    B --> F["1,179 unique reads<br/>(388 duplicates removed)"]
+    A["5,000 read pairs"] --> B["4,409 merged"]
+    A --> C["591 unmerged"]
+    B --> F["3,312 unique reads<br/>(1,097 duplicates removed)"]
     C -.-> X(("not kept"))
-    D -.-> X
-    E -.-> X
 ```
 
 Only merged reads continue past merge. Dedup runs within each sample, over all of its lanes, and never across samples.
 
 ## 1. Merge: `merge_qc/`
 
-`fqdup merge` overlaps R1 with the reverse complement of R2 and collapses each overlapping pair into one read. Short ancient-DNA inserts usually overlap completely. All lanes of a sample are merged into one FASTQ, which is passed on but not published.
+`fqdup merge` overlaps R1 with the reverse complement of R2, clips adapter, and collapses each overlapping pair into one read. Short ancient-DNA inserts usually overlap completely. All lanes of a sample are merged into one FASTQ, which is passed on but not published.
 
-### `merge.json`
+### `merge-outcomes.tsv`
 
-| Field | Meaning | Test |
+Read pairs from all lanes, by outcome:
+
+| `outcome` | Meaning | Test |
 |---|---|---|
-| `counts.pairs_in` | read pairs in, all lanes | 5,000 |
-| `counts.merged` | pairs collapsed into one read; the only reads kept | 1,567 |
-| `counts.unmerged` | passed QC, no acceptable overlap | 516 |
-| `counts.orphan_r1`, `orphan_r2` | only one mate passed QC | 18, 17 |
-| `counts.dropped` | both mates failed QC: too short after clipping, adapter dimers | 2,882 |
-| `counts.balanced` | `true` if the counts add up; `false` means do not trust the run | `true` |
-| `library.type` | `ds` or `ss` | `ds` |
-| `library.type_source` | `declared` (from the manifest) or `detected` | `detected` |
-| `library.udg` | coarse treatment screen: `none`, `half`, `full` | `half` |
-| `adapters`, `complexity_gate`, `params` | adapters used, low-complexity thresholds, merge settings | |
+| `merged` | pair collapsed into one read; the only reads kept | 4,409 |
+| `unmerged` | no acceptable overlap | 591 |
+| `orphan_r1`, `orphan_r2` | only one mate passed | 0, 0 |
+| `dropped` | neither mate passed | 0 |
+| `total` | read pairs in | 5,000 |
 
-The merge yield is `merged / pairs_in`. A drop in yield across samples usually points to adapter or insert-length problems. The test data has many very short inserts, which is why `dropped` is large there.
+The task fails if the outcomes do not add up to `total`. The merge yield is `merged / total`. A drop in yield across samples usually points to adapter or insert-length problems.
 
-### `damage.json`
+### `merge.log`
 
-A damage profile built from the overlapping region of each pair, before the mates are collapsed. Damage shows as disagreement between the two mates, with no reference needed. It uses the same schema as the profile JSON, so read it the same way ([section 2](#reading-the-profile-json)). Use it as a second opinion when the main profile is unclear.
+fqdup's merge messages. The `CUTOFF_FLOOR` line records the merge cutoff:
 
-### `subst.tsv`
+```
+CUTOFF_FLOOR library=lane1_R1.fq.gz floor=0.0178 effective=0.316 requested=0.316
+```
 
-Lines starting with `#` carry the totals and a key. Then one row per position and base pair:
-
-| Column | Meaning |
-|---|---|
-| `strand` | `fwd`: position from the insert's 5′ end · `rev`: from its 3′ end |
-| `pos` | distance from that end, 0 = terminal base |
-| `r1`, `rc2` | base in R1, and in reverse-complemented R2, at the same position |
-| `count` | positions with that base pair |
-
-| `r1` → `rc2` | Where | Signal |
-|---|---|---|
-| `T` → `C` | small `fwd` positions | 5′ deamination |
-| `G` → `A` | small `rev` positions | 3′ deamination (double-stranded library) |
-| `T` → `G` | any position | 8-oxoguanine |
+`floor` is the lowest cutoff fqdup certifies for this library from its own data, and a requested cutoff below it is raised to it. `effective` is the cutoff used. `MERGE_CHUNK` and `MERGE_MEMO` lines are run diagnostics.
 
 ### `merge.provenance.txt`
 
@@ -112,6 +93,7 @@ The figure plots `freq5` and `freq3` from the test sample. Damage shows as the r
 | Column | Meaning |
 |---|---|
 | `pos` | distance from the read end, 0 to 14 |
+| `end5`, `end3` | which end each value is measured from |
 | `freq5` | T / (T + C) at that distance from the 5′ end |
 | `freq3` | A / (A + G) from the 3′ end; T / (T + C) for single-stranded libraries |
 | `freq5_gt` | T / (T + G) from the 5′ end, the 8-oxoguanine marker |
@@ -133,12 +115,12 @@ Read it top-down and stop when you have your answer.
 | 1 Call | `characterization.verdict.deamination.call` | `present` / `absent`: is there authenticated age-related damage? | `present` |
 | | `characterization.verdict.deamination.authenticated_by` | independent evidence behind the call: `channel_b`, `pi_estimate`, `d5_decay_fit`, `pinned_shallow_ct`, `none` | `channel_b` |
 | | `characterization.verdict.deamination.confidence` | `high`, `shallow`, `low_shallow`, `none` | `high` |
-| 2 Size | `characterization.damage_context.evidence.d_max_5` / `d_max_3` | terminal damage above the interior baseline | 0.20 / 0.16 |
-| | `characterization.damage_context.evidence.lambda_5` | decay rate from the end; smaller reaches further into the read | 0.15 |
+| 2 Size | `characterization.damage_context.evidence.d_max_5` / `d_max_3` | terminal damage above the interior baseline | 0.20 / 0.14 |
+| | `characterization.damage_context.evidence.lambda_5` | decay rate from the end; smaller reaches further into the read | 0.22 |
 | | `characterization.damage_magnitude_recommended.absolute_estimate` | one number per library; check `absolute_estimate_valid` | |
 | 3 Type | `library_call.library_type` | `double-stranded` / `single-stranded`; `library_call_overridden` is `true` if declared | `double-stranded` |
-| 4 QC | `qc.library_artifact_contaminated` | adapter or ligation artefacts at the read ends; see `library_artifact_reasons` | `false` |
-| | `qc.library_qc.position0_artifact_5prime` / `_3prime` | depleted terminal base with rising positions 1–4: an artefact, not damage | `false` |
+| 4 QC | `qc.library_artifact_contaminated` | adapter or ligation artefacts at the read ends; see `library_artifact_reasons` | `true`: `adapter_remnant_3prime`, `position0_artifact_3prime` |
+| | `qc.library_qc.position0_artifact_5prime` / `_3prime` | depleted terminal base with rising positions 1–4: an artefact, not damage | `false` / `true` |
 | 5 Other | `characterization.verdict.oxidation.call` | 8-oxoguanine; real but also caused by sample preparation | `none` |
 | | `characterization.verdict.preservation.tier` | aggregate preservation index, separate from the deamination call | |
 
@@ -182,7 +164,7 @@ One read per cluster, named after the original R1 read.
 | `seq_len` | length of the kept read |
 | `count` | input reads in the cluster |
 
-`count` sums to the merged read count, so `duplication = 1 − clusters / merged reads`. The test sample has 1,567 reads in 1,179 clusters: 24.8% duplicates. Many large clusters mean the library was sequenced close to exhaustion.
+`count` sums to the merged read count, so `duplication = 1 − clusters / merged reads`. The test sample has 4,409 reads in 3,312 clusters: 24.9% duplicates. Many large clusters mean the library was sequenced close to exhaustion.
 
 ### `derep.provenance.txt`
 
@@ -192,16 +174,17 @@ Sample, input file, library type given to derep, fqdup SHA-256 and revision labe
 
 | Manifest `library_type` | Merge | Profiles and derep |
 |---|---|---|
-| `ds` or `ss` | uses it; stops if a confident detection disagrees | use it |
-| `auto` or `unknown` | detects it | each detects it again on its own input |
+| `ds` or `ss` | passed as `--library-type` | use it |
+| `auto` or `unknown` | not passed | each detects it on its own input |
 
-With `auto`, check that `merge.json` `library.type` and the profiles' `library_call.library_type` agree. Declaring the type settles any disagreement.
+With `auto`, check that the pre- and post-dedup profiles agree on `library_call.library_type`. Declaring the type settles any disagreement.
 
 ## Built-in checks
 
 A task fails, and publishes nothing, when:
 - a gzip file is corrupt (`gzip -t`);
 - a FASTQ does not start with `@`;
+- merge outcomes do not add up to the read pairs in;
 - a JSON does not parse;
 - an output is empty;
 - a binary does not match a SHA-256 you pinned.

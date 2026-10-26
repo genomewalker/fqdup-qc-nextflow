@@ -117,7 +117,7 @@ Read it top-down and stop when you have your answer.
 | | `characterization.verdict.deamination.confidence` | `high`, `shallow`, `low_shallow`, `none` | `high` |
 | 2 Size | `characterization.damage_context.evidence.d_max_5` / `d_max_3` | terminal damage above the interior baseline | 0.20 / 0.14 |
 | | `characterization.damage_context.evidence.lambda_5` | decay rate from the end; smaller reaches further into the read | 0.22 |
-| | `characterization.damage_magnitude_recommended.absolute_estimate` | one number per library; check `absolute_estimate_valid` | |
+| | `characterization.damage_magnitude_recommended.absolute_estimate` | one number per library, when `absolute_estimate_valid` is `true` and it agrees with the verdict ([below](#when-fields-disagree)) | 0.0 |
 | 3 Type | `library_call.library_type` | `double-stranded` / `single-stranded`; `library_call_overridden` is `true` if declared | `double-stranded` |
 | 4 QC | `qc.library_artifact_contaminated` | adapter or ligation artefacts at the read ends; see `library_artifact_reasons` | `true`: `adapter_remnant_3prime`, `position0_artifact_3prime` |
 | | `qc.library_qc.position0_artifact_5prime` / `_3prime` | depleted terminal base with rising positions 1–4: an artefact, not damage | `false` / `true` |
@@ -135,14 +135,79 @@ A rough scale for `d_max`, for libraries without enzymatic treatment:
 
 These are reference-free estimates and read somewhat lower than alignment-based tools such as metaDMG.
 
-`absolute_estimate` of `0.0` with `valid: true` means no damage within noise. `null` means it could not be determined.
-
-`channels.*` and `diagnostics.*` hold the per-mechanism detectors and raw tables. `channels.deamination` is a sensitive detector and can fire when the stricter verdict says `absent`. Use the verdict for decisions.
+`absolute_estimate` of `null` means the fit was rejected, not that damage is zero.
 
 Never judge a library on `d_max` alone. Look for these together:
 - a confident verdict;
 - curves that rise at the ends;
 - no artefact flags.
+
+### What else is in the JSON
+
+The five steps above use a handful of fields. The rest of the file is grouped into six sections:
+
+| Section | What it holds |
+|---|---|
+| `identity` | libtaph revision, `schema_version`, input file, `n_reads` |
+| `library_call` | library type and the model comparison (`bic`) behind it |
+| `characterization` | the summary layer: `verdict`, `damage_status`, `damage_magnitude_recommended`, `damage_context` (one score per process and the `dominant_process`), and `damage_types` |
+| `qc` | artefact flags (`library_qc`), terminal motif enrichment (`end_motif_enrichment`), and the preservation index |
+| `channels` | one block per detector, listed below |
+| `diagnostics` | raw position and context tables behind the channels |
+
+Work from the top: `characterization` summarises `channels`, and `channels` summarise `diagnostics`.
+
+### Damage types: `characterization.damage_types`
+
+Ancient DNA carries more than deamination. Each row is one detector, labelled by `channel`:
+
+| Channel | `name` | Process | Signal it looks for | Test |
+|---|---|---|---|---|
+| A | `cytosine_deamination` | deamination | C→T at the 5′ end, G→A at the 3′ end (ds) | detected |
+| B | `stop_codon_conversion` | deamination | CAA/CAG/CGA turned into stop codons by C→T; an independent check on A | detected |
+| C | `8_oxog_top_strand` | oxidation (8-oxoguanine) | G→T stop codons at the read ends | not detected |
+| D | `chargaff_gt_asymmetry` | oxidation (8-oxoguanine) | G→T against C→A strand imbalance; single-stranded libraries only | not applicable |
+| E | `purine_enrichment` | depurination | excess A and G at read starts, where strands broke at abasic sites | not detected |
+| F | `8_oxog_complement` | oxidation (8-oxoguanine) | C→A stop codons, the other strand's view of 8-oxoguanine | not detected |
+| G | `cg_stop_enrichment` | empirical | C→G stop codons at the read ends | not detected |
+| H | `at_stop_enrichment` | empirical | A→T stop codons; no known chemical pathway | not detected |
+
+F, G and H appear twice. The `_3prime` rows report a rate only, without a detection call. A row's `detected` counts only when `valid` is also `true`. An empirical channel (`mechanism_status`) is a pattern without an established lesion behind it, so read it as a flag to look closer, not as a diagnosis.
+
+Only deamination tells ancient from modern DNA. Oxidation is real but sample preparation also causes it, and depurination and fragment length are weak, indirect proxies. Use them to describe a library, not to authenticate it.
+
+### Detector blocks: `channels`
+
+| Process | Blocks |
+|---|---|
+| Deamination | `deamination`, `bulk_damage`, `mixture_model`, `d_max_cooccurrence`, `deam_context_spectrum` (C→T by sequence context, including CpG), `interior_ct_cluster`, `per_read_overdispersion` |
+| Oxidation | `oxo_two_marker` (the source of the oxidation verdict), `oxog_estimate`, `oxidation_like`, `oxidation_epsilon`, `oxidative_scission`, `gc_depletion` |
+| Depurination and breakage | `depurination`, `depurination_deconvolution`, `scission`, `fragmentation` |
+| Other | `tau_discriminator` (hydrolytic against oxidative regime), `burial_fingerprint`, `context_primitives` |
+
+`fragmentation` is the quickest of these to read: `median_length` and `short_fraction_lt_50bp` describe the fragment-length distribution. The test sample's median is 52 bp, with 40% of reads under 50 bp.
+
+### When fields disagree
+
+The JSON carries several answers to "is there damage, and how much?", and they do not always agree. The test sample shows three disagreements at once:
+
+| Field | Test, after dedup |
+|---|---|
+| `characterization.verdict.deamination` | `present`, `channel_b`, `high`, `d_max_5prime` 0.20 |
+| `channels.deamination.state` | `EXCESS_PRESENT_DECAY_UNAUTHENTICATED` (`unauthenticated_reason`: `FLAT_LOW_MAGNITUDE`) |
+| `characterization.damage_magnitude_recommended` | `absolute_estimate` 0.0, `absolute_estimate_valid` `true`, from `mixture_model.damaged.d_max_5prime_fit` |
+| `channels.mixture_model.valid` | `false` |
+| `qc.library_artifact_contaminated` | `true` |
+
+Resolve them in this order, following [libtaph's interpretation guide](https://genomewalker.github.io/libtaph/interpretation/):
+
+1. **Present or absent: the verdict.** `characterization.verdict` combines the channels through cross-checks; individual blocks such as `channels.deamination` are inputs to it and can disagree in either direction.
+2. **How much: `absolute_estimate`, only when it is valid and consistent.** Check `absolute_estimate_source`. If the block it names is itself not valid, as `mixture_model` is here, treat the estimate as unresolved and report the verdict's `d_max_5prime` with its confidence.
+3. **Can it be trusted at all: the QC flags.** With `qc.library_artifact_contaminated` `true`, the end signal may be partly technical. Check `library_artifact_reasons`, re-trim if adapter remnants are named, and profile again before reporting amplitudes.
+
+For the test sample: damage is present (verdict), about 0.20 at the 5′ end (verdict `d_max_5prime`), with a 3′ artefact warning that a real library would need resolved first.
+
+Every field is documented in the [libtaph field reference](https://genomewalker.github.io/libtaph/fields/), with the chemistry of each channel in [damage types](https://genomewalker.github.io/libtaph/damage-types/).
 
 ### `pre.tdmg` / `post.tdmg`
 

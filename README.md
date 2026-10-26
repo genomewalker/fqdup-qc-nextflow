@@ -14,10 +14,6 @@ flowchart LR
     P2 -.-> O4[/"profiles/post_derep/"/]
 ```
 
-![Damage curve of the test sample](docs/img/damage-curve.svg)
-
-*Terminal base composition of the bundled test sample. The rise at both read ends is ancient-DNA deamination. [How to read it](docs/outputs.md#2-damage-profile-profilespre_derep-and-profilespost_derep).*
-
 - **[Tutorial](docs/tutorial.md)**: run the bundled test, read the results, then run your own samples.
 - **[Outputs](docs/outputs.md)**: every output file and field, and how to read the damage profile.
 
@@ -63,7 +59,7 @@ nextflow run genomewalker/fqdup-qc-nextflow --manifest samples.tsv --outdir resu
 | `dedup/` | `dedup.fq.gz`, `clusters.tsv.gz`, `derep.provenance.txt` | deduplicated reads and duplicate clusters |
 | `profiles/post_derep/` | `profile-post.html`, `.json`, `.tsv`, `post.tdmg` | damage profile after dedup; report this one |
 
-Start with the HTML report. For the call, read `characterization.verdict.deamination` in the profile JSON. [docs/outputs.md](docs/outputs.md) explains each file.
+Start with the HTML report. For the call, read `characterization.verdict.deamination` in the profile JSON. The JSON also covers oxidation, depurination and fragmentation. [docs/outputs.md](docs/outputs.md) explains each file and every damage type.
 
 Only merged reads are kept. Unmerged pairs and orphan reads are counted in `merge-outcomes.tsv` but not written. Dedup runs per sample, over all of its lanes.
 

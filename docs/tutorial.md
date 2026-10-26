@@ -73,7 +73,34 @@ Open them in this order:
 
    The damage call is confident, but the 3′ end also carries artefact flags. On real data, treat the 3′ values with care when these appear ([step 4](outputs.md#reading-the-profile-json)).
 
-4. **Duplication.** Clusters against merged reads:
+4. **Other damage types.** The profile also tests for oxidation, depurination and other end patterns, one detector per channel:
+
+   ```bash
+   python3 -c '
+   import json
+   p = json.load(open("test-results/profiles/post_derep/synthetic_L1.profile-post.json"))
+   for r in p["characterization"]["damage_types"]:
+       if not r["name"].endswith("_3prime"):
+           print(r["channel"], r["name"], "detected" if r.get("detected") else "-")
+   f = p["channels"]["fragmentation"]
+   print("median length", f["median_length"], "under 50 bp", f["short_fraction_lt_50bp"])'
+   ```
+
+   ```
+   A cytosine_deamination detected
+   B stop_codon_conversion detected
+   C 8_oxog_top_strand -
+   D chargaff_gt_asymmetry -
+   E purine_enrichment -
+   F 8_oxog_complement -
+   G cg_stop_enrichment -
+   H at_stop_enrichment -
+   median length 51.888283 under 50 bp 0.397343
+   ```
+
+   Here only deamination (A) and its stop-codon check (B) fire. [Damage types](outputs.md#damage-types-characterizationdamage_types) explains each channel.
+
+5. **Duplication.** Clusters against merged reads:
 
    ```bash
    zcat test-results/dedup/synthetic_L1.clusters.tsv.gz |

@@ -4,7 +4,7 @@ One run on the bundled test sample, then your own data. About five minutes on a 
 
 ## 1. Install the tools
 
-You need Nextflow 25.10 or later, fqdup 2.1.1 or later, `python3`, `gzip` and `sha256sum`. fastp is only needed if you trim with it (the default for real data).
+You need Nextflow 25.10 or later, fqdup 2.1.1 or later, `python3`, `gzip` and `sha256sum`.
 
 ```bash
 nextflow -version

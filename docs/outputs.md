@@ -7,8 +7,7 @@ results/
 ├── merge_qc/
 │   ├── <sample>.merge-outcomes.tsv     read pairs per merge outcome
 │   ├── <sample>.merge.log              merge cutoff and run diagnostics
-│   ├── <sample>.merge.provenance.txt   binaries, host, time, manifest row
-│   └── <sample>.fastp-reports.tar.gz   fastp reports per lane
+│   └── <sample>.merge.provenance.txt   fqdup binary, host, time, manifest row
 ├── profiles/pre_derep/
 │   ├── <sample>.profile-pre.html       interactive damage report
 │   ├── <sample>.profile-pre.json       full damage profile
@@ -63,7 +62,7 @@ CUTOFF_FLOOR library=lane1_R1.fq.gz floor=0.0178 effective=0.316 requested=0.316
 
 ### `merge.provenance.txt`
 
-`key=value` lines: sample, declared library type, lane count, trim mode, fqdup revision label, SHA-256 of the fqdup and fastp binaries, timestamp, host. It is followed by the full manifest row:
+`key=value` lines: sample, declared library type, lane count, fqdup revision label, SHA-256 of the fqdup binary, timestamp, host. It is followed by the full manifest row:
 
 ```
 manifest.sample=synthetic_L1
@@ -73,10 +72,6 @@ manifest.library_type=auto
 ```
 
 Any extra manifest column, such as a source ID or a control flag, appears here unchanged.
-
-### `fastp-reports.tar.gz`
-
-The fastp JSON and HTML report for each lane, with `--trim_mode fastp`. With `--trim_mode fqdup` it holds only a note that fastp was skipped.
 
 ## 2. Damage profile: `profiles/pre_derep/` and `profiles/post_derep/`
 
@@ -203,7 +198,7 @@ Resolve them in this order, following [libtaph's interpretation guide](https://g
 
 1. **Present or absent: the verdict.** `characterization.verdict` combines the channels through cross-checks; individual blocks such as `channels.deamination` are inputs to it and can disagree in either direction.
 2. **How much: `absolute_estimate`, only when it is valid and consistent.** Check `absolute_estimate_source`. If the block it names is itself not valid, as `mixture_model` is here, treat the estimate as unresolved and report the verdict's `d_max_5prime` with its confidence.
-3. **Can it be trusted at all: the QC flags.** With `qc.library_artifact_contaminated` `true`, the end signal may be partly technical. Check `library_artifact_reasons`, re-trim if adapter remnants are named, and profile again before reporting amplitudes.
+3. **Can it be trusted at all: the QC flags.** With `qc.library_artifact_contaminated` `true`, the end signal may be partly technical. Check `library_artifact_reasons` and resolve the named artefact before reporting amplitudes.
 
 For the test sample: damage is present (verdict), about 0.20 at the 5′ end (verdict `d_max_5prime`), with a 3′ artefact warning that a real library would need resolved first.
 

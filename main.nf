@@ -5,9 +5,6 @@ params.outdir = 'results'
 params.fqdup = 'fqdup'
 params.fqdup_sha256 = null      // set to refuse any other binary
 params.fqdup_revision = 'unrecorded'
-params.fastp = 'fastp'
-params.fastp_sha256 = null
-params.trim_mode = 'fastp'
 params.merge_min_length = 16
 params.library_type = 'auto'
 
@@ -36,7 +33,7 @@ process MERGE_RAW {
 
     output:
     tuple val(meta), path('*.merged.fq.gz'), path('*.merge-outcomes.tsv'), path('*.merge.log'),
-          path('*.merge.provenance.txt'), path('*.fastp-reports.tar.gz')
+          path('*.merge.provenance.txt')
 
     script:
     def r1Array = r1_lanes.collect { "'" + it.toString() + "'" }.join(' ')
@@ -47,28 +44,8 @@ process MERGE_RAW {
     R1=( $r1Array )
     R2=( $r2Array )
     [ "\${#R1[@]}" -eq "\${#R2[@]}" ] && [ "\${#R1[@]}" -gt 0 ]
-    R1_USE=("\${R1[@]}")
-    R2_USE=("\${R2[@]}")
-    mkdir -p trim_reports trim_reads
-    if [ "$params.trim_mode" = fastp ]; then
-      ${pinCheck('fastp_sha', 'fastp', params.fastp, params.fastp_sha256)}
-      for i in "\${!R1[@]}"; do
-        "$params.fastp" -i "\${R1[\$i]}" -I "\${R2[\$i]}" \
-          -o "trim_reads/r1-\$i.fq.gz" -O "trim_reads/r2-\$i.fq.gz" \
-          --detect_adapter_for_pe --length_required 20 \
-          --cut_tail --cut_tail_mean_quality 15 \
-          -g --poly_g_min_len 10 -w ${task.cpus} \
-          -j "trim_reports/lane-\$i.json" -h "trim_reports/lane-\$i.html"
-        gzip -t "trim_reads/r1-\$i.fq.gz" "trim_reads/r2-\$i.fq.gz"
-        R1_USE[\$i]="trim_reads/r1-\$i.fq.gz"
-        R2_USE[\$i]="trim_reads/r2-\$i.fq.gz"
-      done
-    else
-      printf 'fastp skipped; native fqdup merge filters used\\n' > trim_reports/README.txt
-    fi
-    tar -czf "${meta.sample}.fastp-reports.tar.gz" trim_reports
-    r1_csv=\$(IFS=,; printf '%s' "\${R1_USE[*]}")
-    r2_csv=\$(IFS=,; printf '%s' "\${R2_USE[*]}")
+    r1_csv=\$(IFS=,; printf '%s' "\${R1[*]}")
+    r2_csv=\$(IFS=,; printf '%s' "\${R2[*]}")
     "$params.fqdup" merge -1 "\$r1_csv" -2 "\$r2_csv" -o merge_out \
       ${libPlain(meta)} --min-length "$params.merge_min_length" \
       --outcomes summary -p ${task.cpus} 2> "${meta.sample}.merge.log" \
@@ -79,14 +56,14 @@ process MERGE_RAW {
     gzip -c merge_out/merged.fq > "${meta.sample}.merged.fq.gz"
     first=\$(gzip -cd "${meta.sample}.merged.fq.gz" | head -c 1 || true)
     [ "\$first" = '@' ] || { echo 'Merged FASTQ framing invalid' >&2; exit 1; }
-    printf 'sample=%s\\nlibrary_type=%s\\nraw_lane_pairs=%s\\ntrim_mode=%s\\nfqdup_revision=%s\\nfqdup_sha256=%s\\nfastp_sha256=%s\\nstamped=%s\\nhost=%s\\n' \
+    printf 'sample=%s\\nlibrary_type=%s\\nraw_lane_pairs=%s\\nfqdup_revision=%s\\nfqdup_sha256=%s\\nstamped=%s\\nhost=%s\\n' \
       "$meta.sample" "$meta.library_type" "$meta.lanes" \
-      "$params.trim_mode" "$params.fqdup_revision" "\$got" "\${fastp_sha:-none}" "\$(date -Is)" "\$(hostname)" \
+      "$params.fqdup_revision" "\$got" "\$(date -Is)" "\$(hostname)" \
       > "${meta.sample}.merge.provenance.txt"
     cat >> "${meta.sample}.merge.provenance.txt" <<'MANIFEST_END'
 ${manifestLines(meta)}
 MANIFEST_END
-    rm -rf trim_reads merge_out
+    rm -rf merge_out
     """
 
     stub:
@@ -95,7 +72,6 @@ MANIFEST_END
     printf 'outcome\\tcount\\n' > "${meta.sample}.merge-outcomes.tsv"
     printf 'stub\\n' > "${meta.sample}.merge.log"
     printf 'stub\\n' > "${meta.sample}.merge.provenance.txt"
-    printf 'stub\\n' > "${meta.sample}.fastp-reports.tar.gz"
     """
 }
 
@@ -109,7 +85,7 @@ process PROFILE_PRE {
 
     input:
     tuple val(meta), path(merged), path(merge_outcomes), path(merge_log),
-          path(merge_provenance), path(fastp_reports)
+          path(merge_provenance)
 
     output:
     tuple val(meta), path(merged), path('*.profile-pre.json'), path('*.pre.tdmg'),
@@ -224,7 +200,6 @@ process PROFILE_POST {
 
 workflow {
     if (!params.manifest) error 'Provide --manifest: TSV with sample, r1_files, r2_files [, library_type, any other columns]'
-    if (!(params.trim_mode in ['fqdup', 'fastp'])) error 'trim_mode must be fqdup or fastp'
     if (!(params.library_type in ['auto', 'ds', 'ss', 'unknown'])) error 'Invalid library_type'
     // Relative FASTQ paths resolve against the manifest's directory.
     def manifestDir = file(params.manifest).parent

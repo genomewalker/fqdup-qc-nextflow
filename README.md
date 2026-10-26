@@ -4,7 +4,7 @@ A Nextflow workflow for ancient-DNA read QC with [fqdup](https://github.com/geno
 
 ```mermaid
 flowchart LR
-    R["raw R1/R2<br/>lanes"] --> M["<b>MERGE_RAW</b><br/>fastp (optional)<br/>fqdup merge"]
+    R["raw R1/R2<br/>lanes"] --> M["<b>MERGE_RAW</b><br/>fqdup merge"]
     M -->|merged reads| P1["<b>PROFILE_PRE</b><br/>fqdup profile"]
     P1 --> D["<b>SORT_DEREP</b><br/>fqdup sort<br/>fqdup derep"]
     D -->|unique reads| P2["<b>PROFILE_POST</b><br/>fqdup profile"]
@@ -23,13 +23,12 @@ flowchart LR
 nextflow run genomewalker/fqdup-qc-nextflow -profile test --outdir test-results
 ```
 
-The test runs one synthetic sample (5,000 read pairs, two lanes) through all four stages in a few minutes. It uses fqdup's own merge filters, so fastp is not needed.
+The test runs one synthetic sample (5,000 read pairs, two lanes) through all four stages in a few minutes.
 
 ## Requirements
 
 - Nextflow 25.10 or later.
 - [fqdup](https://github.com/genomewalker/fqdup) 2.1.1 or later, on `PATH` or given with `--fqdup /path/to/fqdup`.
-- [fastp](https://github.com/OpenGene/fastp), only with `--trim_mode fastp` (the default).
 - `python3`, `gzip` and `sha256sum`.
 
 ## Input
@@ -54,7 +53,7 @@ nextflow run genomewalker/fqdup-qc-nextflow --manifest samples.tsv --outdir resu
 
 | Directory | Files per sample | What it tells you |
 |---|---|---|
-| `merge_qc/` | `merge-outcomes.tsv`, `merge.log`, `merge.provenance.txt`, `fastp-reports.tar.gz` | merge yield, merge cutoff, provenance |
+| `merge_qc/` | `merge-outcomes.tsv`, `merge.log`, `merge.provenance.txt` | merge yield, merge cutoff, provenance |
 | `profiles/pre_derep/` | `profile-pre.html`, `.json`, `.tsv`, `pre.tdmg` | damage profile of all merged reads |
 | `dedup/` | `dedup.fq.gz`, `clusters.tsv.gz`, `derep.provenance.txt` | deduplicated reads and duplicate clusters |
 | `profiles/post_derep/` | `profile-post.html`, `.json`, `.tsv`, `post.tdmg` | damage profile after dedup; report this one |
@@ -72,9 +71,6 @@ Only merged reads are kept. Unmerged pairs and orphan reads are counted in `merg
 | `--fqdup` | `fqdup` | fqdup binary |
 | `--fqdup_sha256` | | when set, every stage refuses any other fqdup binary |
 | `--fqdup_revision` | `unrecorded` | label written to the provenance files |
-| `--fastp` | `fastp` | fastp binary |
-| `--fastp_sha256` | | when set, refuses any other fastp binary |
-| `--trim_mode` | `fastp` | `fastp` trims each lane before merge; `fqdup` uses only fqdup's merge filters |
 | `--merge_min_length` | `16` | minimum merged read length |
 | `--library_type` | `auto` | default when the manifest has no `library_type` column |
 

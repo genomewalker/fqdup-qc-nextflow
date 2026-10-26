@@ -1,6 +1,6 @@
 # Tutorial
 
-This walks through one run on the bundled test sample, then a run on your own data. It takes about five minutes on a laptop or a single node.
+One run on the bundled test sample, then your own data. About five minutes on a laptop or a single node.
 
 ## 1. Install the tools
 
@@ -19,7 +19,11 @@ If fqdup is not on your `PATH`, pass its location with `--fqdup /path/to/fqdup` 
 nextflow run genomewalker/fqdup-qc-nextflow -profile test --outdir test-results
 ```
 
-The test sample is 5,000 synthetic read pairs in two lanes: a double-stranded library with simulated damage. The run ends with `completed=4 failed=0`, one task per stage.
+The test sample is 5,000 synthetic read pairs in two lanes: a double-stranded library with simulated damage. The run ends with:
+
+```
+[SUCCESS] completed=4 failed=0 cached=0
+```
 
 ## 3. Look at the results
 
@@ -29,13 +33,18 @@ find test-results -type f | sort
 
 Open them in this order:
 
-1. **Merge yield.** In `test-results/merge_qc/synthetic_L1.merge.json`, look at `counts`: 1,567 of 5,000 pairs merged. Only merged reads go on to the later stages.
+1. **Merge yield.** Only merged reads go on to the later stages.
 
    ```bash
    python3 -c 'import json; print(json.load(open("test-results/merge_qc/synthetic_L1.merge.json"))["counts"])'
    ```
+   ```
+   {'pairs_in': 5000, 'merged': 1567, 'unmerged': 516, 'orphan_r1': 18, 'orphan_r2': 17, 'dropped': 2882, 'balanced': True}
+   ```
 
-2. **Damage report.** Open `test-results/profiles/post_derep/synthetic_L1.profile-post.html` in a browser. Both damage curves rise towards the read ends: that is the deamination signal.
+2. **Damage curve.** Open `test-results/profiles/post_derep/synthetic_L1.profile-post.html` in a browser. Both curves rise towards the read ends; that rise is the deamination signal:
+
+   ![Damage curve of the test sample](img/damage-curve.svg)
 
 3. **Damage verdict.**
 
@@ -49,18 +58,23 @@ Open them in this order:
    print("d_max 5prime", e["d_max_5"], "3prime", e["d_max_3"], "lambda 5prime", e["lambda_5"])'
    ```
 
-   This prints `double-stranded present channel_b high` and a 5′ `d_max` of about 0.20.
+   ```
+   double-stranded present channel_b high
+   d_max 5prime 0.204246 3prime 0.163931 lambda 5prime 0.154537
+   ```
 
-4. **Duplication.** In `test-results/dedup/synthetic_L1.clusters.tsv.gz`, compare the number of clusters with the number of merged reads:
+4. **Duplication.** Clusters against merged reads:
 
    ```bash
    zcat test-results/dedup/synthetic_L1.clusters.tsv.gz |
      awk 'NR > 1 { n++; s += $3 } END { printf "%d reads, %d clusters, %.1f%% duplicates\n", s, n, 100 * (1 - n / s) }'
    ```
 
-   This prints `1567 reads, 1179 clusters, 24.8% duplicates`.
+   ```
+   1567 reads, 1179 clusters, 24.8% duplicates
+   ```
 
-[Outputs](outputs.md) explains every file and field.
+[Outputs](outputs.md) explains every file and field, and how to read the profile.
 
 ## 4. Run your own samples
 

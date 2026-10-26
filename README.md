@@ -2,14 +2,21 @@
 
 A Nextflow workflow for ancient-DNA read QC with [fqdup](https://github.com/genomewalker/fqdup). It takes raw paired-end lanes per sample and produces merged-read QC, a reference-free damage profile before and after deduplication, and deduplicated reads ready for mapping or classification.
 
+```mermaid
+flowchart LR
+    R["raw R1/R2<br/>lanes"] --> M["<b>MERGE_RAW</b><br/>fastp (optional)<br/>fqdup merge"]
+    M -->|merged reads| P1["<b>PROFILE_PRE</b><br/>fqdup profile"]
+    P1 --> D["<b>SORT_DEREP</b><br/>fqdup sort<br/>fqdup derep"]
+    D -->|unique reads| P2["<b>PROFILE_POST</b><br/>fqdup profile"]
+    M -.-> O1[/"merge_qc/"/]
+    P1 -.-> O2[/"profiles/pre_derep/"/]
+    D -.-> O3[/"dedup/"/]
+    P2 -.-> O4[/"profiles/post_derep/"/]
 ```
-raw R1/R2 lanes
-  │
-  ├─ MERGE_RAW      optional fastp trimming, then fqdup merge (all lanes → one merged FASTQ)
-  ├─ PROFILE_PRE    fqdup profile on the merged reads
-  ├─ SORT_DEREP     fqdup sort + fqdup derep (PCR duplicate removal)
-  └─ PROFILE_POST   fqdup profile on the deduplicated reads
-```
+
+![Damage curve of the test sample](docs/img/damage-curve.svg)
+
+*Terminal base composition of the bundled test sample. The rise at both read ends is ancient-DNA deamination. [How to read it](docs/outputs.md#2-damage-profile-profilespre_derep-and-profilespost_derep).*
 
 - **[Tutorial](docs/tutorial.md)**: run the bundled test, read the results, then run your own samples.
 - **[Outputs](docs/outputs.md)**: every output file and field, and how to read the damage profile.

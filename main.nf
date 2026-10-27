@@ -7,6 +7,9 @@ params.fqdup_sha256 = null      // set to refuse any other binary
 params.fqdup_revision = 'unrecorded'
 params.merge_min_length = 16
 params.library_type = 'auto'
+params.se_min_length = 16
+params.se_adapter3 = 'AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC'
+params.se_adapter_min_overlap = 5
 
 // library_type is a per-sample property: a cohort may mix single- and double-stranded preps.
 // A declared ds/ss is passed to every stage. For 'auto'/'unknown', profile and derep detect the
@@ -14,6 +17,8 @@ params.library_type = 'auto'
 def libPlain(meta)  { meta.library_type in ['ds', 'ss'] ? "--library-type ${meta.library_type}" : '' }
 // Every manifest column, verbatim, as manifest.<column>=<value> lines for the provenance files.
 def manifestLines(meta) { meta.columns.collect { k, v -> "manifest.${k}=${v ?: ''}" }.join('\n') }
+// Staged file names as single-quoted shell words. A single staged file is a one-element Path.
+def shellWords(files) { files.collect { "'" + it.toString().replace("'", "'\\''") + "'" }.join(' ') }
 // Records the binary's SHA-256 in \$var and, when a pin is given, fails on any other binary.
 def pinCheck(String var, String tool, String bin, pin) {
     "${var}=\$(sha256sum \"\$(command -v '${bin}')\" | cut -d' ' -f1)\n" +
@@ -36,13 +41,11 @@ process MERGE_RAW {
           path('*.merge.provenance.txt')
 
     script:
-    def r1Array = r1_lanes.collect { "'" + it.toString() + "'" }.join(' ')
-    def r2Array = r2_lanes.collect { "'" + it.toString() + "'" }.join(' ')
     """
     set -euo pipefail
     ${pinCheck('got', 'fqdup', params.fqdup, params.fqdup_sha256)}
-    R1=( $r1Array )
-    R2=( $r2Array )
+    R1=( ${shellWords(r1_lanes)} )
+    R2=( ${shellWords(r2_lanes)} )
     [ "\${#R1[@]}" -eq "\${#R2[@]}" ] && [ "\${#R1[@]}" -gt 0 ]
     r1_csv=\$(IFS=,; printf '%s' "\${R1[*]}")
     r2_csv=\$(IFS=,; printf '%s' "\${R2[*]}")
@@ -75,6 +78,58 @@ MANIFEST_END
     """
 }
 
+// Single-end samples have no mate to overlap: fqdup trims the 3' adapter and drops short reads.
+process TRIM_RAW_SE {
+    tag "$meta.sample"
+    cpus 8
+    memory '4 GB'
+    time '24h'
+    publishDir "$params.outdir/trim_qc", mode: 'copy', overwrite: false,
+        saveAs: { name -> name.endsWith('.trimmed.fq.gz') ? null : name }
+
+    input:
+    tuple val(meta), path(r1_lanes)
+
+    output:
+    tuple val(meta), path('*.trimmed.fq.gz'), path('*.trim-report.tsv'), path('*.trim.log'),
+          path('*.trim.provenance.txt')
+
+    script:
+    """
+    set -euo pipefail
+    ${pinCheck('got', 'fqdup', params.fqdup, params.fqdup_sha256)}
+    R1=( ${shellWords(r1_lanes)} )
+    [ "\${#R1[@]}" -gt 0 ]
+    gzip -cdf "\${R1[@]}" > raw.fq
+    "$params.fqdup" trim --single-end -i raw.fq -o trimmed.fq \
+      --min-length "$params.se_min_length" \
+      --adapter3 "$params.se_adapter3" --adapter-min-overlap "$params.se_adapter_min_overlap" \
+      --report "${meta.sample}.trim-report.tsv" -p ${task.cpus} 2> "${meta.sample}.trim.log" \
+      || { cat "${meta.sample}.trim.log" >&2; exit 1; }
+    check_trim_report.awk "${meta.sample}.trim-report.tsv" || { echo 'Trim report incomplete or counts do not add up' >&2; exit 1; }
+    gzip -c trimmed.fq > "${meta.sample}.trimmed.fq.gz"
+    first=\$(gzip -cd "${meta.sample}.trimmed.fq.gz" | head -c 1 || true)
+    [ "\$first" = '@' ] || { echo 'Trimmed FASTQ framing invalid' >&2; exit 1; }
+    printf 'sample=%s\\nlayout=SE\\nlibrary_type=%s\\nraw_lanes=%s\\nse_adapter3=%s\\nse_adapter_min_overlap=%s\\nse_min_length=%s\\nfqdup_revision=%s\\nfqdup_sha256=%s\\nstamped=%s\\nhost=%s\\n' \
+      "$meta.sample" "$meta.library_type" "$meta.lanes" \
+      "$params.se_adapter3" "$params.se_adapter_min_overlap" "$params.se_min_length" \
+      "$params.fqdup_revision" "\$got" "\$(date -Is)" "\$(hostname)" \
+      > "${meta.sample}.trim.provenance.txt"
+    cat >> "${meta.sample}.trim.provenance.txt" <<'MANIFEST_END'
+${manifestLines(meta)}
+MANIFEST_END
+    rm -f raw.fq trimmed.fq
+    """
+
+    stub:
+    """
+    printf '@stub\\nA\\n+\\n!\\n' | gzip -c > "${meta.sample}.trimmed.fq.gz"
+    printf 'raw_single_end_v1\\n' > "${meta.sample}.trim-report.tsv"
+    printf 'stub\\n' > "${meta.sample}.trim.log"
+    printf 'stub\\n' > "${meta.sample}.trim.provenance.txt"
+    """
+}
+
 process PROFILE_PRE {
     tag "$meta.sample"
     cpus 8
@@ -84,18 +139,18 @@ process PROFILE_PRE {
         saveAs: { name -> name ==~ /.*\.(profile-pre\.(json|html|tsv)|pre\.tdmg)/ ? name : null }
 
     input:
-    tuple val(meta), path(merged), path(merge_outcomes), path(merge_log),
-          path(merge_provenance)
+    tuple val(meta), path(reads), path(stage_counts), path(stage_log),
+          path(stage_provenance)
 
     output:
-    tuple val(meta), path(merged), path('*.profile-pre.json'), path('*.pre.tdmg'),
+    tuple val(meta), path(reads), path('*.profile-pre.json'), path('*.pre.tdmg'),
           path('*.profile-pre.html'), path('*.profile-pre.tsv')
 
     script:
     """
     set -euo pipefail
     ${pinCheck('got', 'fqdup', params.fqdup, params.fqdup_sha256)}
-    "$params.fqdup" profile -i "$merged" \
+    "$params.fqdup" profile -i "$reads" \
       --json "${meta.sample}.profile-pre.json" \
       --damage-summary "${meta.sample}.pre.tdmg" \
       --html "${meta.sample}.profile-pre.html" --tsv "${meta.sample}.profile-pre.tsv" \
@@ -116,12 +171,12 @@ process PROFILE_PRE {
 process SORT_DEREP {
     tag "$meta.sample"
     cpus 32
-    memory { Math.max(60, Math.min(400, 8 * (merged.size().intdiv(1000000000L) as int))).GB }
+    memory { Math.max(60, Math.min(400, 8 * (reads.size().intdiv(1000000000L) as int))).GB }
     time '72h'
     publishDir "$params.outdir/dedup", mode: 'copy', overwrite: false
 
     input:
-    tuple val(meta), path(merged), path(pre_json), path(pre_tdmg), path(pre_html), path(pre_tsv)
+    tuple val(meta), path(reads), path(pre_json), path(pre_tdmg), path(pre_html), path(pre_tsv)
 
     output:
     tuple val(meta), path('*.dedup.fq.gz'), path('*.clusters.tsv.gz'),
@@ -133,7 +188,7 @@ process SORT_DEREP {
     set -euo pipefail
     ${pinCheck('got', 'fqdup', params.fqdup, params.fqdup_sha256)}
     mkdir -p tmp
-    "$params.fqdup" sort -i "$merged" -o sorted.fq.gz \
+    "$params.fqdup" sort -i "$reads" -o sorted.fq.gz \
       --max-memory ${maxMemGb}G -p ${task.cpus} -t tmp
     gzip -t sorted.fq.gz
     first=\$(gzip -cd sorted.fq.gz | head -c 1 || true)
@@ -146,8 +201,8 @@ process SORT_DEREP {
     gzip -t "${meta.sample}.dedup.fq.gz" "${meta.sample}.clusters.tsv.gz"
     first=\$(gzip -cd "${meta.sample}.dedup.fq.gz" | head -c 1 || true)
     [ "\$first" = '@' ] || { echo 'Dedup FASTQ framing invalid' >&2; exit 1; }
-    printf 'sample=%s\\ninput_merged=%s\\nlibrary_type=%s\\nfqdup_revision=%s\\nfqdup_sha256=%s\\nmax_mem_gb=%s\\nstamped=%s\\nhost=%s\\n' \
-      "$meta.sample" "$merged" "$meta.library_type" "$params.fqdup_revision" "\$got" "$maxMemGb" "\$(date -Is)" "\$(hostname)" \
+    printf 'sample=%s\\nlayout=%s\\ninput_reads=%s\\nlibrary_type=%s\\nfqdup_revision=%s\\nfqdup_sha256=%s\\nmax_mem_gb=%s\\nstamped=%s\\nhost=%s\\n' \
+      "$meta.sample" "$meta.layout" "$reads" "$meta.library_type" "$params.fqdup_revision" "\$got" "$maxMemGb" "\$(date -Is)" "\$(hostname)" \
       > "${meta.sample}.derep.provenance.txt"
     rm -f sorted.fq.gz
     rm -rf tmp
@@ -199,7 +254,7 @@ process PROFILE_POST {
 }
 
 workflow {
-    if (!params.manifest) error 'Provide --manifest: TSV with sample, r1_files, r2_files [, library_type, any other columns]'
+    if (!params.manifest) error 'Provide --manifest: TSV with sample, r1_files, r2_files [, layout PE|SE, library_type, any other columns]'
     if (!(params.library_type in ['auto', 'ds', 'ss', 'unknown'])) error 'Invalid library_type'
     // Relative FASTQ paths resolve against the manifest's directory.
     def manifestDir = file(params.manifest).parent
@@ -210,15 +265,31 @@ workflow {
             def id = row.sample?.toString()
             if (!(id ==~ /[A-Za-z0-9_.-]+/)) error "Invalid sample ID: $id"
             def r1 = row.r1_files.split(',').collect(lane)
-            def r2 = row.r2_files.split(',').collect(lane)
-            if (!r1 || r1.size() != r2.size()) error "Unpaired raw lanes: $id"
+            def r2 = row.r2_files?.trim() ? row.r2_files.split(',').collect(lane) : []
+            def layout = (row.layout ?: 'PE').toString().trim()
+            if (!(layout in ['PE', 'SE'])) error "Invalid layout for $id: $layout"
+            if (layout == 'SE' && r2) error "Single-end sample with r2_files: $id"
+            if (!r1 || (layout == 'PE' && r1.size() != r2.size())) error "Unpaired raw lanes: $id"
             def lt = (row.library_type ?: params.library_type).toString().trim()
             if (!(lt in ['auto', 'ds', 'ss', 'unknown'])) error "Invalid library_type for $id: $lt"
-            def meta = [sample: id, library_type: lt, lanes: r1.size(), columns: new LinkedHashMap(row)]
+            def meta = [sample: id, layout: layout, library_type: lt, lanes: r1.size(), columns: new LinkedHashMap(row)]
             [meta, r1, r2]
         }
-    MERGE_RAW(reads)
-    PROFILE_PRE(MERGE_RAW.out)
+        .toList()
+        .flatMap { rows ->
+            def ids = rows.collect { it[0].sample }
+            def dup = ids.findAll { id -> ids.count(id) > 1 }.unique()
+            if (dup) error "Duplicate sample IDs: ${dup.join(', ')}"
+            rows
+        }
+        .branch { meta, r1, r2 ->
+            paired: meta.layout == 'PE'
+            single: true
+                return [meta, r1]
+        }
+    MERGE_RAW(reads.paired)
+    TRIM_RAW_SE(reads.single)
+    PROFILE_PRE(MERGE_RAW.out.mix(TRIM_RAW_SE.out))
     SORT_DEREP(PROFILE_PRE.out)
     PROFILE_POST(SORT_DEREP.out)
 }

@@ -8,6 +8,10 @@ results/
 │   ├── <sample>.merge-outcomes.tsv     read pairs per merge outcome
 │   ├── <sample>.merge.log              merge cutoff and run diagnostics
 │   └── <sample>.merge.provenance.txt   fqdup binary, host, time, manifest row
+├── trim_qc/                            single-end samples instead of merge_qc/
+│   ├── <sample>.trim-report.tsv        reads and bases kept, dropped and clipped
+│   ├── <sample>.trim.log               trim messages
+│   └── <sample>.trim.provenance.txt    fqdup binary, host, time, manifest row
 ├── profiles/pre_derep/
 │   ├── <sample>.profile-pre.html       interactive damage report
 │   ├── <sample>.profile-pre.json       full damage profile
@@ -68,10 +72,34 @@ CUTOFF_FLOOR library=lane1_R1.fq.gz floor=0.0178 effective=0.316 requested=0.316
 manifest.sample=synthetic_L1
 manifest.r1_files=lane1_R1.fq.gz,lane2_R1.fq.gz
 manifest.r2_files=lane1_R2.fq.gz,lane2_R2.fq.gz
+manifest.layout=PE
 manifest.library_type=auto
 ```
 
 Any extra manifest column, such as a source ID or a control flag, appears here unchanged.
+
+## 1b. Single-end trim: `trim_qc/`
+
+A sample with `layout` set to `SE` is single-end. There is no mate to overlap, so `fqdup trim --single-end` clips the 3′ adapter (`--se_adapter3`) from each read and drops reads shorter than `--se_min_length`. A clip needs an exact match of at least `--se_adapter_min_overlap` adapter bases at the read's end, or the whole adapter anywhere inside it. All lanes go into one trimmed FASTQ, which is passed on to the profiles and dedup but not published.
+
+### `trim-report.tsv`
+
+The first line names the format (`raw_single_end_v1`). Then come the settings used, then `key<TAB>value` counts:
+
+| Key | Meaning | Test |
+|---|---|---|
+| `input` | reads in | 5,000 |
+| `retained` | reads kept; the only reads passed on | 5,000 |
+| `empty`, `short_reads`, `long_reads` | reads dropped as empty, shorter than the minimum, longer than a maximum | 0, 0, 0 |
+| `dropped` | sum of the three | 0 |
+| `adapter3_reads`, `adapter3_bases` | reads clipped at the 3′ adapter, and bases removed | 4,133 and 388,536 |
+| `input_bases`, `retained_bases`, `discarded_bases` | bases in, kept, and in dropped reads | 755,000, 366,464, 0 |
+
+fqdup stops if reads or bases do not balance. The task also fails unless the report starts with `raw_single_end_v1` and has `input`, `retained` and `dropped` exactly once each, as whole numbers, with `input` above zero and equal to `retained + dropped`. The single-end yield is `retained / input`.
+
+### `trim.provenance.txt`
+
+Like `merge.provenance.txt`, with `layout=SE`, `raw_lanes` in place of `raw_lane_pairs`, and the trim settings used: `se_adapter3`, `se_adapter_min_overlap`, `se_min_length`.
 
 ## 2. Damage profile: `profiles/pre_derep/` and `profiles/post_derep/`
 
@@ -228,13 +256,13 @@ One read per cluster, named after the original R1 read.
 
 ### `derep.provenance.txt`
 
-Sample, input file, library type given to derep, fqdup SHA-256 and revision label, memory limit, timestamp, host.
+Sample, layout (`PE` or `SE`), input reads, library type given to derep, fqdup SHA-256 and revision label, memory limit, timestamp, host.
 
 ## Library type through the stages
 
 | Manifest `library_type` | Merge | Profiles and derep |
 |---|---|---|
-| `ds` or `ss` | passed as `--library-type` | use it |
+| `ds` or `ss` | passed as `--library-type`; not used by single-end trim | use it |
 | `auto` or `unknown` | not passed | each detects it on its own input |
 
 With `auto`, check that the pre- and post-dedup profiles agree on `library_call.library_type`. Declaring the type settles any disagreement.
@@ -245,8 +273,13 @@ A task fails, and publishes nothing, when:
 - a gzip file is corrupt (`gzip -t`);
 - a FASTQ does not start with `@`;
 - merge outcomes do not add up to the read pairs in;
+- a single-end trim report is incomplete or its counts do not add up;
 - a JSON does not parse;
 - an output is empty;
 - a binary does not match a SHA-256 you pinned.
 
 These checks catch truncated and empty files. They do not validate every FASTQ record.
+
+The run stops before any task starts when the manifest has an invalid or duplicate sample ID, an unknown `layout` or `library_type`, a `PE` sample without matching R2 lanes, or an `SE` sample with R2 lanes.
+
+`tests/run_checks.sh` exercises the trim-report check and these manifest rules; `tests/mutants.sh` plants a bug in each and confirms the checks catch it.

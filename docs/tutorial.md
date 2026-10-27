@@ -19,10 +19,14 @@ If fqdup is not on your `PATH`, pass its location with `--fqdup /path/to/fqdup` 
 nextflow run genomewalker/fqdup-qc-nextflow -profile test --outdir test-results
 ```
 
-The test sample is 5,000 synthetic read pairs in two lanes: a double-stranded library with simulated damage. The run ends with:
+The test has two samples built from the same synthetic double-stranded library with simulated damage:
+- `synthetic_L1` is paired-end: 5,000 read pairs in two lanes, through `MERGE_RAW`;
+- `synthetic_SE` is the R1 files alone, read as single-end, through `TRIM_RAW_SE`.
+
+The run ends with:
 
 ```
-[SUCCESS] completed=4 failed=0 cached=0
+[SUCCESS] completed=8 failed=0 cached=0
 ```
 
 ## 3. Look at the results
@@ -111,22 +115,39 @@ Open them in this order:
    4409 reads, 3312 clusters, 24.9% duplicates
    ```
 
+6. **Single-end yield.** The single-end sample has no merge. Its trim report counts the reads and bases kept and clipped:
+
+   ```bash
+   grep -E '^(input|retained|dropped|adapter3_reads)\b' test-results/trim_qc/synthetic_SE.trim-report.tsv
+   ```
+
+   ```
+   input	5000
+   retained	5000
+   adapter3_reads	4133
+   dropped	0
+   ```
+
+   Its profiles and dedup files have the same layout as the paired-end sample's.
+
 [Outputs](outputs.md) explains every file and field, and how to read the profile.
 
 ## 4. Run your own samples
 
-Write a tab-separated manifest, one row per sample. List each lane's R1 and R2 files, comma-separated and in the same order:
+Write a tab-separated manifest, one row per sample. List each lane's R1 and R2 files, comma-separated and in the same order. For a single-end sample, set `layout` to `SE`, list its lanes under `r1_files` and leave `r2_files` empty. A `PE` row (the default) with no R2 files stops the run.
 
 ```
-sample	r1_files	r2_files	library_type	source_id
-lib01	/data/lib01_L001_R1.fq.gz,/data/lib01_L002_R1.fq.gz	/data/lib01_L001_R2.fq.gz,/data/lib01_L002_R2.fq.gz	ds	S-0001
-lib02	/data/lib02_L001_R1.fq.gz	/data/lib02_L001_R2.fq.gz	auto	S-0002
-blank01	/data/blank01_L001_R1.fq.gz	/data/blank01_L001_R2.fq.gz	ds	BLANK-01
+sample	r1_files	r2_files	layout	library_type	source_id
+lib01	/data/lib01_L001_R1.fq.gz,/data/lib01_L002_R1.fq.gz	/data/lib01_L001_R2.fq.gz,/data/lib01_L002_R2.fq.gz	PE	ds	S-0001
+lib02	/data/lib02_L001_R1.fq.gz	/data/lib02_L001_R2.fq.gz	PE	auto	S-0002
+lib03	/data/lib03_L001.fq.gz,/data/lib03_L002.fq.gz		SE	ss	S-0003
+blank01	/data/blank01_L001_R1.fq.gz	/data/blank01_L001_R2.fq.gz	PE	ds	BLANK-01
 ```
 
 - `sample` names the output files. Use letters, digits, `_`, `.` and `-`.
-- `library_type` is `ds`, `ss`, `auto` or `unknown`. Declare it when you know it. A declared type is checked against fqdup's detection at merge and stops the run if the two clearly disagree.
-- Add any other columns you need, such as source IDs, library IDs or a control flag. The workflow ignores them for processing and copies them verbatim into `merge_qc/<sample>.merge.provenance.txt`, so every output can be traced back to your records.
+- Single-end reads are cut where the adapter starts. A read whose molecule was shorter than the cycle count then ends at the molecule's 3′ end; a read from a longer molecule does not. Damage at the 3′ end is measured only on the first kind. Set `--se_adapter3` if your libraries use an adapter other than TruSeq.
+- `library_type` is `ds`, `ss`, `auto` or `unknown`. Declare it when you know it. A declared type is checked against fqdup's detection at merge and stops the run if the two clearly disagree. Single-end trimming does not use it; the profiles and derep do.
+- Add any other columns you need, such as source IDs, library IDs or a control flag. The workflow ignores them for processing and copies them verbatim into `merge_qc/<sample>.merge.provenance.txt`, so every output can be traced back to your records. Single-end rows go to `trim_qc/<sample>.trim.provenance.txt`.
 
 Then run:
 
@@ -143,6 +164,7 @@ Each stage asks for the resources below. Each tool's thread count follows the CP
 | Stage | CPUs | Memory | Time |
 |---|---|---|---|
 | `MERGE_RAW` | 8 | 16 GB | 24 h |
+| `TRIM_RAW_SE` | 8 | 4 GB | 24 h |
 | `PROFILE_PRE`, `PROFILE_POST` | 8 | 16 GB | 12 h |
 | `SORT_DEREP` | 32 | 8 GB per GB of merged FASTQ, between 60 and 400 GB | 72 h |
 
